@@ -1,0 +1,14 @@
+*__pycache__*
+build/
+*.spec
+.idea/
+venv/
+log/
+
+# local tooling / generated / machine-specific
+.claude/
+reports/
+.pytest_cache/
+.vscode/
+datas/config.ini
+datas/nodes.json

@@ -1,0 +1,107 @@
+{
+  "0": {
+    "enabled": true,
+    "tx": "02 04",
+    "expect": "mode=1 level=0"
+  },
+  "1": {
+    "enabled": true,
+    "tx": "",
+    "expect": "location=2"
+  },
+  "2": {
+    "enabled": false,
+    "tx": "EC 14 01 00",
+    "expect": ""
+  },
+  "3": {
+    "enabled": false,
+    "tx": "01 00 00 C0 01 20 1D DE 02 08 \nDF 02 02 08 E5 02 02 08 EB 02 02 08 F1 02 02 08 \nF7 02 02 08 00 00 00 00 00 00 00 00 00 00 00 00 \n00 00 00 00 FD 02 02 08 03 03 02 08 00 00 00 00 \n09 03 02 08 ED 57 02 08 79 DE 02 08 79 DE 02 08 \n79 DE 02 08 79 DE 02 08 79 DE 02 08 79 DE 02 08 \n79 DE 02 08 79 DE 02 08 79 DE 02 08 79 DE 02 08 \n79 DE 02 08 05 11 02 08 B5 10 02 08 DD 10 02 08 \n55 11 02 08 79 DE 02 08 8D 10 02 08 7D 11 02 08 \n79 DE 02 08 DD 63 02 08 F1 63 02 08 05 64 02 08 \n19 64 02 08 79 DE 02 08 79 DE 02 08 79 DE 02 08 \n79 DE 02 08 79 DE 02 08 79 DE 02 08 79 DE 02 08 \n79 DE 02 08 79 DE 02 08 79 DE 02 08 79 DE 02 08 \n79 DE 02 08 79 DE 02 08 79 DE 02 08 E5 73 02 08 \n79 10 02 08 A1 10 02 08 79 DE 02 08 79 DE 02 08 \n79 DE 02 08 79 DE 02 08",
+    "expect": ""
+  },
+  "4": {
+    "enabled": false,
+    "tx": "",
+    "expect": ""
+  },
+  "5": {
+    "enabled": false,
+    "tx": "",
+    "expect": ""
+  },
+  "6": {
+    "enabled": false,
+    "tx": "",
+    "expect": ""
+  },
+  "7": {
+    "enabled": false,
+    "tx": "20260329",
+    "expect": ""
+  },
+  "8": {
+    "enabled": false,
+    "tx": "",
+    "expect": ""
+  },
+  "9": {
+    "enabled": false,
+    "tx": "",
+    "expect": "model=3 port5=4"
+  },
+  "10": {
+    "enabled": false,
+    "tx": "00 01",
+    "expect": ""
+  },
+  "11": {
+    "enabled": false,
+    "tx": "01 00 00",
+    "expect": ""
+  },
+  "12": {
+    "enabled": false,
+    "tx": "01",
+    "expect": ""
+  },
+  "13": {
+    "enabled": false,
+    "tx": "01 01",
+    "expect": ""
+  },
+  "14": {
+    "enabled": false,
+    "tx": "01",
+    "expect": ""
+  },
+  "15": {
+    "enabled": false,
+    "tx": "01 00 C2 01 00 00 01",
+    "expect": ""
+  },
+  "16": {
+    "enabled": false,
+    "tx": "01 00",
+    "expect": ""
+  },
+  "17": {
+    "enabled": false,
+    "tx": "01 00 00 00 00 00",
+    "expect": ""
+  },
+  "18": {
+    "enabled": false,
+    "tx": "",
+    "expect": ""
+  },
+  "19": {
+    "enabled": false,
+    "tx": "01 00",
+    "expect": "port_no=1 is_terminal=0"
+  },
+  "__target__": {
+    "mode": "路由路径",
+    "node": "BRIDGE_FIBRE (0x0801)",
+    "path": "4"
+  }
+}

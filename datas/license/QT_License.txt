@@ -1,0 +1,248 @@
+Qt
+
+
+ Leichen Office (Inspector Office) use Qt as LGPL
+
+ include QtCore QtGUI QtNetwork QtSql QtTest QtWidgets QtConcurrent QtRemoteObjects QtSerialBus
+
+ QtSerialPort QtWebEngine QtWebSockets QtXML
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+
+ Public License, which is displayed below.
+========================================
+
+QtCore
+
+You can get the source code of qtcore from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+
+QtGUI
+
+You can get the source code of QtGUI from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+QtNetwork
+
+You can get the source code of QtNetwork from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+QtSql
+
+You can get the source code of QtSql from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+QtTest
+
+You can get the source code of QtTest from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+
+=================================================================
+QtWidgets
+
+You can get the source code of QtWidgets from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+QtConcurrent
+
+You can get the source code of QtConcurrent from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+QtRemoteObjects
+
+You can get the source code of QtRemoteObjects from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+QtSerialBus
+
+You can get the source code of QtSerialBus from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+QtSerialPort
+
+You can get the source code of QtSerialPort from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+QtWebEngine
+
+You can get the source code of QtWebEngine from
+https://github.com/qt/qtwebengine.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+QtWebSockets
+
+You can get the source code of QtWebSockets from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
+
+QtXML
+
+You can get the source code of QtXML from
+https://github.com/qt/qtbase.git
+
+The Qt Toolkit is Copyright (C) 2015-2019 The Qt Company Ltd.
+
+ Contact: http://www.qt.io/licensing/
+
+
+
+ You may use, distribute and copy the Qt Toolkit under the terms of
+
+ GNU Lesser General Public License version 3, which is displayed below.
+
+ This license makes reference to the version 3 of the GNU General
+=================================================================
