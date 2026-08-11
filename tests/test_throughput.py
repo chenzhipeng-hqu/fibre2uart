@@ -312,5 +312,79 @@ class TestReversePath(unittest.TestCase):
         self.assertGreater(m['rx_bytes_return'], 0)
 
 
+class TestRoundTrip(unittest.TestCase):
+    """#2：往返完成判定（ack 迁移到回程）+ 往返 RTT + 反向指标 UI/报告。"""
+
+    def setUp(self):
+        from PySide6.QtWidgets import QApplication
+        self.app = QApplication.instance() or QApplication(sys.argv)
+
+    def _make_worker(self, return_timeout=1.0):
+        return ThroughputTestWorker(
+            MockClient(), 0x0001, "固定包", packet_size=64, interval_ms=10, duration=5,
+            return_timeout=return_timeout)
+
+    @staticmethod
+    def _frame(data, sof=SOF_RX, cmd=0x01):
+        return CommandFrame(sof=sof, check=0, seq=0, cmd=cmd, port_len=0, ports=[], data=data)
+
+    def test_ack_set_on_return(self):
+        """ack 由回程拥有：_on_return_frame 匹配成功 → 置 _ack_event。"""
+        w = self._make_worker()
+        payload = w._generate_payload(2)
+        w._ack_event.clear()
+        w._register_pending_return(2, payload, t0=time.perf_counter())
+        w._on_return_frame(self._frame(payload))
+        self.assertTrue(w._ack_event.is_set())
+
+    def test_ack_not_set_on_forward(self):
+        """正向（B 收到）不再置 packet-ack：_loopback_reader 处理一项后 _ack_event 仍 cleared。"""
+        w = self._make_worker()
+        payload = w._generate_payload(3)
+        mock_ser = Mock()
+        mock_ser.is_open = True
+        mock_ser.read.return_value = payload
+        mock_ser.in_waiting = len(payload)
+        w._loopback_serial = mock_ser
+        w._ack_event.clear()
+        w._pending_queue.put((3, time.time(), payload))
+        reader = threading.Thread(target=w._loopback_reader, daemon=True)
+        reader.start()
+        _d = time.time() + 2.0
+        while time.time() < _d and not mock_ser.write.called:
+            time.sleep(0.02)
+        w._stop_flag.set()
+        reader.join(timeout=2.0)
+        self.assertFalse(w._ack_event.is_set(),
+                         "正向不应再置 packet-ack（ack 已迁移到回程）")
+
+    def test_roundtrip_rtt_recorded(self):
+        """往返 RTT：_on_return_frame 用 pending 的 t0 记 latencies_roundtrip。"""
+        w = self._make_worker()
+        payload = w._generate_payload(4)
+        t0 = time.perf_counter() - 0.05
+        w._register_pending_return(4, payload, t0=t0)
+        w._on_return_frame(self._frame(payload))
+        m = w.get_metrics()
+        self.assertEqual(len(m['latencies_roundtrip']), 1)
+        self.assertGreaterEqual(m['latencies_roundtrip'][0], 0.0)
+
+    def test_report_includes_reverse_and_rtt(self):
+        """导出报告含反向统计与往返 RTT。"""
+        panel = ThroughputTestPanel()
+        panel.set_client(MockClient())
+        w = ThroughputTestWorker(MockClient(), 0x0001, "固定包",
+                                 packet_size=64, interval_ms=10, duration=1)
+        m = w.get_metrics()
+        m['rx_count_return'] = 10
+        m['rx_bytes_return'] = 640
+        m['data_corrupt_count_return'] = 1
+        m['loopback_miss_count_return'] = 2
+        m['latencies_roundtrip'] = [0.01, 0.02, 0.03]
+        report = panel._generate_report(m)
+        self.assertIn("反向", report)
+        self.assertIn("往返", report)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

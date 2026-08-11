@@ -110,6 +110,7 @@ class ThroughputTestWorker(threading.Thread):
             'rx_bytes_return': 0,
             'data_corrupt_count_return': 0,   # 反向内容比对失败
             'loopback_miss_count_return': 0,  # 反向超时未收到
+            'latencies_roundtrip': [],        # 往返 RTT（A发→B收→B发→A收）— #2
         }
         self._last_sample_time: float = 0.0  # 上次采样时刻
         # _metrics 跨发送线程/读者线程/UI 线程共享。每个键只有一个写线程
@@ -206,13 +207,14 @@ class ThroughputTestWorker(threading.Thread):
                     # 如果有回环串口，读取返回数据验证
                     if self._loopback_serial:
                         if self._wait_for_ack:
-                            # 关键：先 clear 再 put。读者的 set() 只会在本包入队之后才发生，
-                            # 因此 clear 放在 put 之前绝不会抹掉本帧的确认信号，避免
-                            # "读者处理太快 → set() 被随后的 clear() 清除 → wait() 虚假超时"的竞态。
+                            # 先 clear 再 put：清掉上一包回程遗留的 ack，使本包 wait() 真正等待
+                            # 本包回程。ack 现由 _on_return_frame（transport 接收线程，收到 0xAB
+                            # 回程帧）置位（#2/ADR-0001），不再由 _loopback_reader 置位。
+                            # clear 必须在 wait 之前：否则上一包的 ack 会让本包 wait() 立即返回。
                             self._ack_event.clear()
                         # 投入待验证队列，由独立读取线程处理，不阻塞发送循环
                         self._pending_queue.put((seq, t0, payload))
-                        self._register_pending_return(seq, payload)
+                        self._register_pending_return(seq, payload, t0=t0)
                         if self._wait_for_ack:
                             # 等待回环读取线程确认收到本包（或超时/停止）
                             if self._stop_flag.is_set():
@@ -484,22 +486,25 @@ class ThroughputTestWorker(threading.Thread):
                     self._stop_flag.set()
                     self._ack_event.set()  # 解除发送循环等待
                     break
-            # 通知发送循环本包已处理完毕（成功或超时）
-            self._ack_event.set()
+            # ack 不在此置位（#2/ADR-0001）：正向完成不再是 packet-ack，
+            # 由 _on_return_frame（A 端收到回程）置位。正向 miss+wait/stop_on_error
+            # 的解除等待仍由上面 else 分支内的 _ack_event.set() 处理。
 
     # ── 反向链路（设备→PC）捕获与校验 —— ADR-0001 ────────────────
     # worker 包装 FrameParser.on_frame，拦截 0xAB/cmd<0x10 的回程透传帧，
     # 用 AA55+seq 匹配本包、内容比对；不破坏虚拟串口路由（原回调照常调用）。
 
     def _register_pending_return(self, seq: int, payload: bytes,
-                                 deadline: Optional[float] = None) -> None:
+                                 deadline: Optional[float] = None,
+                                 t0: Optional[float] = None) -> None:
         """登记一个待回程包，供反向匹配查表。
 
         deadline 为 None 时取 now + _return_timeout；测试可传显式时刻（0.0 = 已过期）。
+        t0 为本包发送时刻（perf_counter），用于往返 RTT（#2）；None 则不计往返 RTT。
         """
         dl = deadline if deadline is not None else time.time() + self._return_timeout
         with self._return_lock:
-            self._pending_returns[seq] = {'payload': payload, 'deadline': dl}
+            self._pending_returns[seq] = {'payload': payload, 'deadline': dl, 't0': t0}
 
     @staticmethod
     def _extract_seq(data: bytes) -> Optional[int]:
@@ -533,6 +538,12 @@ class ThroughputTestWorker(threading.Thread):
             logger.debug(f"[REVERSE-CORRUPT] seq={seq:3d} 反向内容比对失败")
         else:
             logger.debug(f"[REVERSE-OK] seq={seq:3d} len={len(frame.data):3d}B")
+        # 往返 RTT（#2）：A发→B收→B发→A收
+        t0_ret = entry.get('t0')
+        if t0_ret is not None:
+            self._metrics['latencies_roundtrip'].append(time.perf_counter() - t0_ret)
+        # ack 迁移到回程（#2）：A 收到回程即本包往返完成，解除发送循环等待
+        self._ack_event.set()
 
     def _install_return_hook(self) -> None:
         """包装 client._parser.on_frame：拦截反向回程帧，再照常调原回调。"""
@@ -1231,6 +1242,11 @@ class ThroughputTestPanel(QWidget):
         send_err_count = metrics.get('send_err_count', 0)
         loopback_miss = metrics.get('loopback_miss_count', 0)
         data_corrupt = metrics.get('data_corrupt_count', 0)
+        # 反向（设备→PC）回程指标（#1）+ 往返 RTT（#2）
+        rx_count_return = metrics.get('rx_count_return', 0)
+        data_corrupt_return = metrics.get('data_corrupt_count_return', 0)
+        loopback_miss_return = metrics.get('loopback_miss_count_return', 0)
+        latencies_roundtrip = metrics.get('latencies_roundtrip', [])
         
         # 判断是否接入了回环串口（有过接收成功或接收超时才算接入）
         has_loopback = (rx_count > 0 or loopback_miss > 0)
@@ -1299,11 +1315,13 @@ class ThroughputTestPanel(QWidget):
             throughput_line = f"吞吐量(实测): 发 {realtime_tx_kbps:.1f} KB/s / 收 {realtime_rx_kbps:.1f} KB/s"
         elapsed = self._worker.get_elapsed() if self._worker else 0.0
         elapsed_str = f"{int(elapsed//3600):02d}:{int((elapsed%3600)//60):02d}:{int(elapsed%60):02d}"
+        avg_rt_rtt = sum(latencies_roundtrip) / len(latencies_roundtrip) * 1000 if latencies_roundtrip else 0.0
         text = (
             f"已发送: {tx_count} 包  已接收: {rx_count} 包  待回复： {tx_ok_count-rx_count} 丢帧率: {loss_str}\n"
             f"发送成功: {tx_ok_count}  发送失败: {send_err_count}  回环超时: {loopback_miss}  数据损坏: {data_corrupt}\n"
             f"队列积压: 发送队列={tx_count-tx_ok_count}  等待响应={tx_ok_count-rx_count}\n"
             f"平均RTT: {avg_rtt:.1f}ms   P50: {p50_rtt:.1f}ms   P70: {p70_rtt:.1f}ms   P99: {p99_rtt:.1f}ms   最小: {min_rtt:.1f}ms   最大: {max_rtt:.1f}ms\n"
+            f"反向: 收 {rx_count_return}  损坏 {data_corrupt_return}  丢失 {loopback_miss_return}  往返RTT: {avg_rt_rtt:.1f}ms\n"
             f"{throughput_line}\n"
             f"CPU: {cpu_percent:4.1f}%   内存: {memory_mb:4.1f} MB   GC: {gc_count}\n"
             f"已运行: {elapsed_str}"
@@ -1341,7 +1359,12 @@ class ThroughputTestPanel(QWidget):
         tx_bytes = metrics.get('tx_bytes', 0)
         rx_bytes = metrics.get('rx_bytes', 0)
         data_corrupt = metrics.get('data_corrupt_count', 0)
-        
+        # 反向（设备→PC）回程指标（#1）+ 往返 RTT（#2）
+        rx_count_return = metrics.get('rx_count_return', 0)
+        data_corrupt_return = metrics.get('data_corrupt_count_return', 0)
+        loopback_miss_return = metrics.get('loopback_miss_count_return', 0)
+        latencies_roundtrip = metrics.get('latencies_roundtrip', [])
+
         has_loopback = (rx_count > 0 or loopback_miss > 0)
         # 丢帧率 = (尝试发送总数 - 已确认接收数) / 尝试发送总数
         loss_rate = (tx_count - rx_count) / tx_count * 100 if (tx_count > 0 and has_loopback) else 0.0
@@ -1385,13 +1408,18 @@ class ThroughputTestPanel(QWidget):
         p99_idx = int(len(sorted_lat) * 0.99)
         p99_rtt = sorted_lat[p99_idx] * 1000 if p99_idx < len(sorted_lat) else 0.0
         max_rtt = max(latencies) * 1000 if latencies else 0.0
-        
+        # 往返 RTT（#2）：A发→B收→B发→A收
+        avg_rt_rtt = sum(latencies_roundtrip) / len(latencies_roundtrip) * 1000 if latencies_roundtrip else 0.0
+
+        term_addr = self._combo_terminal.currentData()
+        term_str = f"0x{term_addr:04X}" if isinstance(term_addr, int) else "—"
+
         report = f"""# 通信性能测试报告
 
 ## 测试配置
 
 - **时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-- **测试终端口**: 0x{self._combo_terminal.currentData():04X}
+- **测试终端口**: {term_str}
 - **测试模式**: {self._combo_mode.currentText()}
 - **包大小**: {self._spin_size.value()} 字节
 - **发送间隔**: {self._spin_rate.value()} ms
@@ -1417,6 +1445,10 @@ class ThroughputTestPanel(QWidget):
 | 接收吞吐量(实测) | {avg_throughput_rx:.2f} KB/s | - | - |
 | 理论发送速率 | {theory_tx_kbps:.2f} KB/s | - | - |
 | 带宽利用率 | {(avg_throughput_tx / theory_tx_kbps * 100) if theory_tx_kbps > 0 else 0:.1f}% | - | - |
+| 反向接收包数 | {rx_count_return} | - | - |
+| 反向数据损坏 | {data_corrupt_return} | 0 | {'✅' if data_corrupt_return == 0 else '❌'} |
+| 反向超时丢失 | {loopback_miss_return} | - | - |
+| 平均往返 RTT | {avg_rt_rtt:.2f} ms | - | - |
 
 ## 延迟分布
 
