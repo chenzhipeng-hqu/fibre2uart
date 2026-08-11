@@ -29,6 +29,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 
 from config import get_config
+from frame.models import SOF_RX
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QProgressBar, QPushButton, QSlider, QSpinBox, QTextEdit,
@@ -56,7 +57,8 @@ class ThroughputTestWorker(threading.Thread):
                  packet_size: int = 240, interval_ms: int = 20, loopback_port: str = None,
                  loopback_baudrate: int = 1000000, duration: int = 60,
                  max_count: int = 0, target_port_path=None, stop_on_error: bool = False,
-                 wait_for_ack: bool = False):
+                 wait_for_ack: bool = False, return_timeout: float = 1.0,
+                 loopback_serial_factory=None):
         super().__init__(daemon=True, name="ThroughputTestWorker")
         self._client = client
         self._logical_addr = target_logical_addr
@@ -79,6 +81,12 @@ class ThroughputTestWorker(threading.Thread):
         self._loopback_serial = None  # 回环串口对象
         self._reader = None  # 回环读取线程引用（用于退出前 join，避免 close/read 竞态）
         self._pending_queue: queue.Queue = queue.Queue()  # 待验证已发包队列
+        self._return_timeout = max(return_timeout, 0.01)   # 反向回程每包超时（秒）
+        self._loopback_serial_factory = loopback_serial_factory  # 可注入的回环串口工厂（测试用）
+        self._pending_returns: dict = {}   # 反向待回程：seq -> {'payload':bytes,'deadline':float}
+        self._return_lock = threading.Lock()  # 保护 _pending_returns 与反向指标
+        self._original_on_frame = None      # hook 安装前保存的原 on_frame 回调
+        self._return_reaper = None          # 反向超时清扫线程引用
         
         self._metrics = {
             'tx_count': 0,           # 尝试发送的帧数（含发送失败）
@@ -97,6 +105,11 @@ class ThroughputTestWorker(threading.Thread):
             # 回环模式：'normal' 正常等待 / 'fast_drain' 连续超时后的快速放行
             'loopback_mode': 'normal',
             'loopback_mode_msg': '',   # 模式切换提示（供监控区显示）
+            # 反向（设备→PC）回程指标 —— 见 ADR-0001
+            'rx_count_return': 0,             # 反向 A 端收到回程帧数
+            'rx_bytes_return': 0,
+            'data_corrupt_count_return': 0,   # 反向内容比对失败
+            'loopback_miss_count_return': 0,  # 反向超时未收到
         }
         self._last_sample_time: float = 0.0  # 上次采样时刻
         # _metrics 跨发送线程/读者线程/UI 线程共享。每个键只有一个写线程
@@ -114,9 +127,14 @@ class ThroughputTestWorker(threading.Thread):
         if self._loopback_port:
             try:
                 import serial
-                self._loopback_serial = serial.Serial(
-                    self._loopback_port, self._loopback_baudrate, timeout=0.5
-                )  # timeout=0.5 让 read(n) 最多等 0.5s，足够应对 USB 断包
+                if self._loopback_serial_factory is not None:
+                    # 测试注入的工厂
+                    self._loopback_serial = self._loopback_serial_factory(
+                        self._loopback_port, self._loopback_baudrate, timeout=0.5)
+                else:
+                    self._loopback_serial = serial.Serial(
+                        self._loopback_port, self._loopback_baudrate, timeout=0.5
+                    )  # timeout=0.5 让 read(n) 最多等 0.5s，足够应对 USB 断包
                 logger.info(f"已打开回环串口: {self._loopback_port} @ {self._loopback_baudrate}bps")
                 self._reader = threading.Thread(target=self._loopback_reader, daemon=True, name="LoopbackReader")
                 self._reader.start()
@@ -128,6 +146,12 @@ class ThroughputTestWorker(threading.Thread):
                     f"interval={self._interval_ms}ms, duration={self._duration}s")
         
         try:
+            # 安装 hook + 启动 reaper 在 try 内：确保 finally 总能卸载 hook / 回收 reaper（见 ADR-0001）。
+            # 放在 try 外的话，安装与 try 之间若抛异常，finally 不执行 → hook 泄漏在共享 client._parser 上。
+            self._install_return_hook()
+            self._return_reaper = threading.Thread(target=self._return_reaper_loop,
+                                                   daemon=True, name="ReturnReaper")
+            self._return_reaper.start()
             while not self._stop_flag.is_set():
                 # 检查是否暂停
                 if self._pause_flag.is_set():
@@ -188,6 +212,7 @@ class ThroughputTestWorker(threading.Thread):
                             self._ack_event.clear()
                         # 投入待验证队列，由独立读取线程处理，不阻塞发送循环
                         self._pending_queue.put((seq, t0, payload))
+                        self._register_pending_return(seq, payload)
                         if self._wait_for_ack:
                             # 等待回环读取线程确认收到本包（或超时/停止）
                             if self._stop_flag.is_set():
@@ -245,6 +270,11 @@ class ThroughputTestWorker(threading.Thread):
             # 等待读取线程真正退出后再关串口，避免 close() 与 read() 竞态
             if self._reader is not None:
                 self._reader.join(timeout=2.0)
+            # 停止反向超时清扫线程 + 卸载回程捕获 hook（见 ADR-0001）
+            if self._return_reaper is not None:
+                self._return_reaper.join(timeout=2.0)
+                self._return_reaper = None
+            self._uninstall_return_hook()
             # 关闭回环串口
             if self._loopback_serial:
                 try:
@@ -419,6 +449,12 @@ class ThroughputTestWorker(threading.Thread):
                         break
 
             if frame_data:
+                # 反向触发：把 B 收到的字节原样回写 B.TX（设备反向转发回 A）—— ADR-0001
+                if self._loopback_serial is not None:
+                    try:
+                        self._loopback_serial.write(frame_data)
+                    except Exception as e:
+                        logger.debug(f"[ECHO] seq={seq:3d} B.TX 回写异常: {e}")
                 # 全包内容比对：回环数据应与发送内容完全一致
                 rtt = time.perf_counter() - t0
                 self._metrics['latencies'].append(rtt)
@@ -450,6 +486,100 @@ class ThroughputTestWorker(threading.Thread):
                     break
             # 通知发送循环本包已处理完毕（成功或超时）
             self._ack_event.set()
+
+    # ── 反向链路（设备→PC）捕获与校验 —— ADR-0001 ────────────────
+    # worker 包装 FrameParser.on_frame，拦截 0xAB/cmd<0x10 的回程透传帧，
+    # 用 AA55+seq 匹配本包、内容比对；不破坏虚拟串口路由（原回调照常调用）。
+
+    def _register_pending_return(self, seq: int, payload: bytes,
+                                 deadline: Optional[float] = None) -> None:
+        """登记一个待回程包，供反向匹配查表。
+
+        deadline 为 None 时取 now + _return_timeout；测试可传显式时刻（0.0 = 已过期）。
+        """
+        dl = deadline if deadline is not None else time.time() + self._return_timeout
+        with self._return_lock:
+            self._pending_returns[seq] = {'payload': payload, 'deadline': dl}
+
+    @staticmethod
+    def _extract_seq(data: bytes) -> Optional[int]:
+        """从回程帧 data 中解出嵌入的 seq（AA55 + seq(2B 大端)）；不匹配返回 None。"""
+        if len(data) >= 4 and data[:2] == b'\xAA\x55':
+            return struct.unpack('>H', data[2:4])[0]
+        return None
+
+    def _on_return_frame(self, frame) -> None:
+        """on_frame hook 回调：处理 0xAB/cmd<0x10 的反向回程帧。
+
+        在 transport 接收线程被调用。_pending_returns 的取用加锁；反向指标每个键
+        只有本线程一个写线程（与 tx_*/rx_* 同构），单键自增无需锁（见 _metrics 注释）。
+        """
+        # 双重过滤（hook 已过滤一次）：仅 MCU→PC 透传帧
+        if frame.sof != SOF_RX or frame.cmd >= 0x10:
+            return
+        seq = self._extract_seq(frame.data)
+        if seq is None:
+            return
+        with self._return_lock:
+            entry = self._pending_returns.pop(seq, None)  # 取用必须加锁（reaper 也碰该表）
+        if entry is None:
+            return  # 未知 seq（非本测试包 / 重复 / 已超时），忽略
+        payload = entry['payload']
+        # 反向指标：单一写线程（transport 接收线程），无需锁，与既有 tx_*/rx_* 一致
+        self._metrics['rx_count_return'] += 1
+        self._metrics['rx_bytes_return'] += len(frame.data)
+        if frame.data != payload:
+            self._metrics['data_corrupt_count_return'] += 1
+            logger.debug(f"[REVERSE-CORRUPT] seq={seq:3d} 反向内容比对失败")
+        else:
+            logger.debug(f"[REVERSE-OK] seq={seq:3d} len={len(frame.data):3d}B")
+
+    def _install_return_hook(self) -> None:
+        """包装 client._parser.on_frame：拦截反向回程帧，再照常调原回调。"""
+        parser = getattr(self._client, '_parser', None)
+        if parser is None:
+            self._original_on_frame = None
+            return
+        # 安装时把原回调捕获到局部变量 original，闭包引用它（而非 self._original_on_frame）。
+        # 这样 _uninstall_return_hook 把 self._original_on_frame 置 None 时不会影响在飞 hook，
+        # 消除 check-then-call 的 TOCTOU（不会出现「检查通过→被置 None→调用 None(frame)」）。
+        original = parser.on_frame
+        self._original_on_frame = original
+
+        def _hook(frame):
+            # 反向回程透传帧 → 反向匹配；original 为安装时捕获，始终调用（虚拟串口路由不受影响）
+            if frame.sof == SOF_RX and frame.cmd < 0x10:
+                self._on_return_frame(frame)
+            if original is not None:
+                original(frame)
+
+        parser.on_frame = _hook
+
+    def _uninstall_return_hook(self) -> None:
+        """还原 on_frame 原回调。"""
+        parser = getattr(self._client, '_parser', None)
+        if parser is None or self._original_on_frame is None:
+            return
+        parser.on_frame = self._original_on_frame
+        self._original_on_frame = None
+
+    def _reap_expired_returns(self) -> None:
+        """清扫已过 deadline 的待回程项，计反向 miss。"""
+        now = time.time()
+        with self._return_lock:
+            expired = [s for s, e in self._pending_returns.items() if e['deadline'] <= now]
+            for s in expired:
+                del self._pending_returns[s]
+        if expired:
+            # 单一写线程（reaper），无需锁
+            self._metrics['loopback_miss_count_return'] += len(expired)
+            logger.debug(f"[REVERSE-MISS] 反向超时未回 {len(expired)} 包: {expired}")
+
+    def _return_reaper_loop(self) -> None:
+        """周期清扫反向超时项，直到停止且无待回程。"""
+        while not self._stop_flag.is_set() or self._pending_returns:
+            self._reap_expired_returns()
+            time.sleep(0.1)
 
     def stop(self):
         """停止测试。"""
