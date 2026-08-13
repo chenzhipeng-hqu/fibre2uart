@@ -183,32 +183,32 @@ class CommandPanelBroadcast(unittest.TestCase):
 
         saved = {}
 
-        def mock_set(addr_mode, addr, cmd, data, count, interval_ms=0):
+        # mock 签名对齐真实 set_command_config(addr_mode, logical_addr="",
+        # path_addr="", broadcast_addr="0x00", cmd="", data="", count=1, interval_ms=0)
+        def mock_set(addr_mode, logical_addr="", path_addr="",
+                     broadcast_addr="0x00", cmd="", data="",
+                     count=1, interval_ms=0):
             saved['addr_mode'] = addr_mode
-            saved['addr'] = addr
+            saved['broadcast_addr'] = broadcast_addr
+            saved['logical_addr'] = logical_addr
 
-        with patch("ui.command_panel.CommandPanel._save_config") as m:
-            # 直接调内部 _save_config 验证逻辑
-            pass
-
-        # 通过 patch get_config 验证写入值
+        # patch config.get_config 返回 mock cfg（_save_config 内部 from config import get_config）
         mock_cfg = MagicMock()
         mock_cfg.set_command_config.side_effect = mock_set
-        with patch("ui.command_panel.get_config", return_value=mock_cfg, create=True):
-            # 在 _save_config 内部 import 的是局部 from config import get_config
-            # 用另一种方式：直接调 _save_config 并 patch 模块内的 get_config
-            import ui.command_panel as _mod
-            orig = getattr(_mod, 'get_config', None)
-            try:
-                import importlib
-                cfg_mod = importlib.import_module('config')
-                orig_fn = cfg_mod.get_config
-                cfg_mod.get_config = lambda: mock_cfg
-                p._save_config()
-                self.assertEqual(saved.get('addr_mode'), "广播")
-                self.assertEqual(saved.get('addr'), "0")
-            finally:
-                cfg_mod.get_config = orig_fn
+        mock_cfg.command_logical_addr = "0x0801"
+        mock_cfg.command_path_addr = ""
+        mock_cfg.command_broadcast_addr = "0x00"
+
+        import config as cfg_mod
+        orig_fn = cfg_mod.get_config
+        cfg_mod.get_config = lambda: mock_cfg
+        try:
+            p._save_config()
+            self.assertEqual(saved.get('addr_mode'), "广播")
+            # 广播模式地址固定 0x00，不修改（command_panel.py 不覆盖 broadcast_addr）
+            self.assertEqual(saved.get('broadcast_addr'), "0x00")
+        finally:
+            cfg_mod.get_config = orig_fn
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -367,7 +367,7 @@ class CommandPanelConfig(unittest.TestCase):
         try:
             c1 = AppConfig()
             c1.set_command_config(
-                addr_mode="逻辑地址", addr="0x0801",
+                addr_mode="逻辑地址", logical_addr="0x0801",
                 cmd="25", data="", count=1, interval_ms=200
             )
             reset_config()
