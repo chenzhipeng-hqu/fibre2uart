@@ -253,7 +253,7 @@ class TestAppConfigCommandInterval(unittest.TestCase):
         try:
             c1 = AppConfig()
             c1.set_command_config(
-                addr_mode="逻辑地址", addr="0x0801",
+                addr_mode="逻辑地址", logical_addr="0x0801",
                 cmd="25", data="", count=1, interval_ms=300,
             )
             reset_config()
@@ -273,7 +273,7 @@ class TestAppConfigCommandInterval(unittest.TestCase):
         try:
             c1 = AppConfig()
             c1.set_command_config(
-                addr_mode="逻辑地址", addr="0x0801",
+                addr_mode="逻辑地址", logical_addr="0x0801",
                 cmd="25", data="", count=1,
             )
             reset_config()
@@ -282,6 +282,189 @@ class TestAppConfigCommandInterval(unittest.TestCase):
         finally:
             cfg_module.CONFIG_FILE = orig
             reset_config()
+
+
+class TestExternalConfig(unittest.TestCase):
+    """from_external：替换式外部配置加载（ADR-0002 / #3）。
+
+    外部路径与 GUI 默认路径完全分离：
+      - 只用「内置 _DEFAULTS + 传入文件」
+      - 不读、不写 datas/config.ini（哨兵路径断言）
+      - 不进 get_config() 单例
+      - 外部文件不存在 → 明确 error，不落回 datas
+      - 外部实例 save() 是 no-op（绝不落盘）
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp()
+        # 哨兵 datas 路径：放在 tmp 内、外部模式绝不应触碰它
+        self._sentinel = os.path.join(self._tmp, "datas", "config.ini")
+        self._orig_config_file = cfg_module.CONFIG_FILE
+        cfg_module.CONFIG_FILE = self._sentinel
+        reset_config()
+
+    def tearDown(self) -> None:
+        cfg_module.CONFIG_FILE = self._orig_config_file
+        reset_config()
+
+    def _write_external(self, body: str) -> str:
+        path = os.path.join(self._tmp, "external.ini")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+        return path
+
+    # ── S2 外部模式不碰 datas ─────────────────────────────────────────
+
+    def test_external_does_not_touch_datas(self) -> None:
+        """from_external 构造后，哨兵 datas 文件从未被创建/写入。"""
+        path = self._write_external("[serial]\nport = /dev/ttyUSB0\n")
+        c = AppConfig.from_external(path)
+        self.assertEqual(c.serial_port, "/dev/ttyUSB0")
+        # 哨兵路径不存在 = 外部模式既没 read 也没 save 它
+        self.assertFalse(os.path.exists(self._sentinel))
+
+    def test_external_does_not_read_datas(self) -> None:
+        """即使 datas 存在脏值，外部模式也不读它——只用传入文件 + 默认。"""
+        # 预置一个"脏" datas（hotplug=true），外部模式绝不能看到它
+        os.makedirs(os.path.dirname(self._sentinel), exist_ok=True)
+        with open(self._sentinel, "w", encoding="utf-8") as f:
+            f.write("[discovery]\nhotplug = true\n")
+        path = self._write_external(  # 外部文件不写 hotplug
+            "[serial]\nport = /dev/ttyUSB0\n")
+        c = AppConfig.from_external(path)
+        # hotplug 走内置默认 false，而非 datas 的 true
+        self.assertFalse(c.hotplug)
+
+    # ── S3 外部 ini 覆盖 + 新 key 默认值 ───────────────────────────────
+
+    def test_external_new_keys_defaults(self) -> None:
+        """新 key 默认值正确（最小外部 ini，不写新 key）。"""
+        path = self._write_external("[serial]\nport = /dev/ttyUSB0\n")
+        c = AppConfig.from_external(path)
+        self.assertEqual(c.headless_discovery_timeout, 10)
+        self.assertEqual(c.headless_log_level, "INFO")
+        self.assertEqual(c.headless_log_file, "")
+        self.assertEqual(c.headless_report_file, "")
+        self.assertEqual(c.throughput_duration, 30)
+        self.assertEqual(c.throughput_loss_threshold, 0)
+        self.assertEqual(c.throughput_corrupt_threshold, 0)
+
+    def test_external_new_keys_overridable(self) -> None:
+        """新 key 可被外部 ini 覆盖。"""
+        path = self._write_external(
+            "[headless]\n"
+            "discovery_timeout = 20\n"
+            "log_level = DEBUG\n"
+            "log_file = /tmp/x.log\n"
+            "report_file = /tmp/r.md\n"
+            "[throughput]\n"
+            "duration = 60\n"
+            "loss_threshold = 5\n"
+            "corrupt_threshold = 3\n"
+        )
+        c = AppConfig.from_external(path)
+        self.assertEqual(c.headless_discovery_timeout, 20)
+        self.assertEqual(c.headless_log_level, "DEBUG")
+        self.assertEqual(c.headless_log_file, "/tmp/x.log")
+        self.assertEqual(c.headless_report_file, "/tmp/r.md")
+        self.assertEqual(c.throughput_duration, 60)
+        self.assertEqual(c.throughput_loss_threshold, 5)
+        self.assertEqual(c.throughput_corrupt_threshold, 3)
+
+    def test_external_overrides_defaults(self) -> None:
+        """外部 ini 覆盖内置默认（既有 key，仿 TestAppConfigFileOverrides）。"""
+        path = self._write_external(
+            "[serial]\nport = /dev/ttyUSB9\nbaudrate = 9600\n"
+            "[discovery]\nhotplug = true\nrs485_max_addr = 32\n"
+        )
+        c = AppConfig.from_external(path)
+        self.assertEqual(c.serial_port, "/dev/ttyUSB9")
+        self.assertEqual(c.baudrate, 9600)
+        self.assertTrue(c.hotplug)
+        self.assertEqual(c.rs485_max_addr, 32)
+
+    # ── S4 外部文件不存在 → 明确 error，不落回 datas ───────────────────
+
+    def test_external_missing_file_raises(self) -> None:
+        """外部文件不存在 → 抛明确异常，不静默落回 datas。"""
+        missing = os.path.join(self._tmp, "nope.ini")
+        with self.assertRaises((FileNotFoundError, ValueError)):
+            AppConfig.from_external(missing)
+        # 且未因此落回 datas 创建/读它
+        self.assertFalse(os.path.exists(self._sentinel))
+
+    # ── S5 外部模式绝不 save() ─────────────────────────────────────────
+
+    def test_external_save_is_noop(self) -> None:
+        """外部实例 save() 不写盘（哨兵路径内容不变）。"""
+        path = self._write_external("[serial]\nport = /dev/ttyUSB0\n")
+        c = AppConfig.from_external(path)
+        # 预置哨兵文件，save() 若写盘会改变其内容
+        os.makedirs(os.path.dirname(self._sentinel), exist_ok=True)
+        with open(self._sentinel, "w", encoding="utf-8") as f:
+            f.write("SENTINEL_ORIGINAL")
+        c.save()  # 应为 no-op
+        with open(self._sentinel, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "SENTINEL_ORIGINAL")
+
+    # ── 不进单例 ───────────────────────────────────────────────────────
+
+    def test_external_not_registered_as_singleton(self) -> None:
+        """外部实例不进 get_config() 单例，二者互不影响。"""
+        path = self._write_external("[serial]\nport = /dev/ttyUSB0\n")
+        ext = AppConfig.from_external(path)
+        # get_config() 走 GUI 默认路径（哨兵），不应返回外部实例
+        gui_cfg = cfg_module.get_config()
+        self.assertIsNot(gui_cfg, ext)
+        # GUI 单例读哨兵（不存在 → 默认空串），外部读传入文件
+        self.assertEqual(gui_cfg.serial_port, "")
+        self.assertEqual(ext.serial_port, "/dev/ttyUSB0")
+
+    # ── review 加固（TOCTOU / setter 守卫 / log_level 校验）─────────────
+
+    def test_external_missing_file_does_not_silently_fallback(self) -> None:
+        """文件不存在 → 抛异常且绝不静默落回默认（configparser.read 对缺失文件是静默的，
+        必须用 open 原子读，否则会得到全默认配置而调用方不知情）。"""
+        missing = os.path.join(self._tmp, "ghost.ini")
+        with self.assertRaises(FileNotFoundError):
+            AppConfig.from_external(missing)
+
+    def test_external_setter_raises_readonly(self) -> None:
+        """只读实例上调用任意 setter → 抛 ReadOnlyConfigError（fail fast，不静默吞）。"""
+        from config import ReadOnlyConfigError
+        path = self._write_external("[serial]\nport = /dev/ttyUSB0\n")
+        c = AppConfig.from_external(path)
+        with self.assertRaises(ReadOnlyConfigError):
+            c.set_serial_port("/dev/ttyUSB1")
+        with self.assertRaises(ReadOnlyConfigError):
+            c.set_firmware_path("/tmp/x.bin")
+        with self.assertRaises(ReadOnlyConfigError):
+            c.set_throughput_config("测试终端口", 1, "", "", 1000000)
+        with self.assertRaises(ReadOnlyConfigError):
+            c.set_command_config("逻辑地址")
+        # 且内存未被改（set_serial_port 应在改内存前就抛）
+        self.assertEqual(c.serial_port, "/dev/ttyUSB0")
+
+    def test_gui_setter_not_blocked(self) -> None:
+        """GUI 默认实例（非只读）setter 正常工作——守卫未误伤 GUI 路径。"""
+        c = AppConfig()  # GUI 路径，_read_only=False
+        c.set_serial_port("/dev/ttyUSB7")
+        self.assertEqual(c.serial_port, "/dev/ttyUSB7")
+
+    def test_headless_log_level_invalid_falls_back(self) -> None:
+        """无效 log_level 回退 INFO（不把垃圾值传给 logging.basicConfig 崩溃）。"""
+        path = self._write_external(
+            "[headless]\nlog_level = NONSENSE\n")
+        c = AppConfig.from_external(path)
+        self.assertEqual(c.headless_log_level, "INFO")
+
+    def test_headless_log_level_valid_passthrough(self) -> None:
+        """有效 log_level 正常透传（大小写不敏感）。"""
+        for lvl in ("debug", "Warning", "ERROR", "critical"):
+            path = self._write_external(
+                f"[headless]\nlog_level = {lvl}\n")
+            c = AppConfig.from_external(path)
+            self.assertEqual(c.headless_log_level, lvl.upper())
 
 
 if __name__ == "__main__":

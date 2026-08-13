@@ -68,6 +68,15 @@ _DEFAULTS: dict = {
         "wait_for_ack": "false",
         "stop_on_error": "false",
         "max_count": "0",
+        "duration": "30",
+        "loss_threshold": "0",
+        "corrupt_threshold": "0",
+    },
+    "headless": {
+        "discovery_timeout": "10",
+        "log_level": "INFO",
+        "log_file": "",
+        "report_file": "",
     },
     "command": {
         "addr_mode": "逻辑地址",
@@ -83,6 +92,10 @@ _DEFAULTS: dict = {
         "min_interval_ms": "10",   # 广播最小间隔（毫秒）
     },
 }
+
+
+class ReadOnlyConfigError(RuntimeError):
+    """尝试修改只读配置实例（from_external 创建）时抛出。"""
 
 
 class AppConfig:
@@ -101,9 +114,36 @@ class AppConfig:
 
     def __init__(self) -> None:
         self._cfg = configparser.ConfigParser()
+        self._read_only = False   # 外部配置实例为 True（from_external），save() 失效
         self._load_defaults()
         self._load_file()
         self._apply_args()
+
+    @classmethod
+    def from_external(cls, path: str) -> "AppConfig":
+        """加载一份**外部配置文件**，与 datas/config.ini 完全分离。
+
+        - 只用「内置 _DEFAULTS + 传入 path 文件」，**不读、不写 datas/config.ini**
+        - 外部文件必须存在；不存在抛 FileNotFoundError，**不落回 datas**
+        - 返回实例标记为只读：``save()`` 为 no-op，绝不落盘
+        - **不进模块级 get_config() 单例**（调用方自行持有）
+
+        供无头 CLI 入口（ADR-0002）使用，保证外部调用不污染 GUI 配置、结果可复现。
+        """
+        inst = cls.__new__(cls)
+        inst._cfg = configparser.ConfigParser()
+        inst._read_only = True
+        inst._load_defaults()
+        # 原子打开+读取：open() 自身在不存在的瞬间抛 FileNotFoundError，
+        # 避免 os.path.exists 与 read 之间的 TOCTOU（configparser.read 会静默忽略缺失文件）。
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                inst._cfg.read_file(fh)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"外部配置文件不存在: {path}")
+        logger.info("外部配置已加载: %s", os.path.abspath(path))
+        return inst
 
     # ──────────────────────────────────────────
     # 初始化
@@ -165,7 +205,10 @@ class AppConfig:
     # ──────────────────────────────────────────
 
     def save(self) -> None:
-        """将当前配置写入 config.ini。"""
+        """将当前配置写入 config.ini（只读实例为 no-op，绝不落盘）。"""
+        if self._read_only:
+            logger.debug("外部配置只读，save() 已跳过")
+            return
         cfg_dir = os.path.dirname(CONFIG_FILE)
         if cfg_dir:
             os.makedirs(cfg_dir, exist_ok=True)
@@ -217,6 +260,7 @@ class AppConfig:
 
     def set_serial_port(self, port: str) -> None:
         """更新并持久化串口配置。"""
+        self._ensure_writable()
         if "serial" not in self._cfg:
             self._cfg["serial"] = {}
         self._cfg["serial"]["port"] = port
@@ -224,10 +268,16 @@ class AppConfig:
 
     def set_firmware_path(self, path: str) -> None:
         """更新并持久化固件文件路径。"""
+        self._ensure_writable()
         if "ui" not in self._cfg:
             self._cfg["ui"] = {}
         self._cfg["ui"]["firmware_path"] = path
         self.save()
+
+    def _ensure_writable(self) -> None:
+        """只读实例（from_external 创建）禁止任何修改——fail fast，而非静默吞。"""
+        if self._read_only:
+            raise ReadOnlyConfigError("外部配置实例为只读，不允许修改")
 
     @property
     def upgrade_max_retries(self) -> int:
@@ -301,6 +351,7 @@ class AppConfig:
                               stop_on_error: bool = False,
                               max_count: int = 0) -> None:
         """保存通信测试面板配置（内容相同则跳过写入）。"""
+        self._ensure_writable()
         sec = "throughput"
         if sec not in self._cfg:
             self._cfg[sec] = {}
@@ -360,6 +411,50 @@ class AppConfig:
     def broadcast_min_interval_ms(self) -> int:
         return self._cfg.getint("broadcast", "min_interval_ms", fallback=10)
 
+    # ── throughput 扩展（ADR-0002 无头 CLI）──────────────────────────
+
+    @property
+    def throughput_duration(self) -> int:
+        """无头测试时长（秒），值域 ≥ 1。到点自动停。"""
+        return max(1, self._cfg.getint("throughput", "duration", fallback=30))
+
+    @property
+    def throughput_loss_threshold(self) -> int:
+        """往返丢包率上限（%），值域 [0, 100]。0 = 严格。"""
+        return max(0, min(100, self._cfg.getint("throughput", "loss_threshold", fallback=0)))
+
+    @property
+    def throughput_corrupt_threshold(self) -> int:
+        """往返损坏率上限（%），值域 [0, 100]。0 = 严格。"""
+        return max(0, min(100, self._cfg.getint("throughput", "corrupt_threshold", fallback=0)))
+
+    # ── headless 段（ADR-0002 无头 CLI）─────────────────────────────
+
+    @property
+    def headless_discovery_timeout(self) -> int:
+        """连上后等拓扑就绪的超时（秒），值域 ≥ 1。"""
+        return max(1, self._cfg.getint("headless", "discovery_timeout", fallback=10))
+
+    @property
+    def headless_log_level(self) -> str:
+        """日志级别名（DEBUG/INFO/WARNING/ERROR/CRITICAL），无效则回退 INFO。"""
+        level = self._cfg.get("headless", "log_level", fallback="INFO").upper()
+        valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if level not in valid:
+            logger.warning("无效的日志级别 '%s'，回退到 INFO", level)
+            return "INFO"
+        return level
+
+    @property
+    def headless_log_file(self) -> str:
+        """日志文件路径（空串 = 走 stderr，绝不污染 stdout）。"""
+        return self._cfg.get("headless", "log_file", fallback="")
+
+    @property
+    def headless_report_file(self) -> str:
+        """人话 markdown 报告路径（空串 = 不写，仅 stdout JSON）。"""
+        return self._cfg.get("headless", "report_file", fallback="")
+
     def set_command_config(self, addr_mode: str,
                            logical_addr: str = "",
                            path_addr: str = "",
@@ -368,6 +463,7 @@ class AppConfig:
                            count: int = 1,
                            interval_ms: int = 0) -> None:
         """保存单指令面板配置（内容相同则跳过写入）。"""
+        self._ensure_writable()
         sec = "command"
         if sec not in self._cfg:
             self._cfg[sec] = {}
